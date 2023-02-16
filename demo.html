@@ -1,0 +1,421 @@
+<html>
+<head>
+  <style type="text/css">
+    body {
+      
+      font-family: sans-serif;
+      font-size:  9pt;
+      
+      /*
+      font-family: serif; 
+      font-size: 10pt;
+      */
+    }
+  </style>
+</head>
+<body>
+
+  <!-- will be visible at the start. once a .csv-file has been selected, the data will be parsed and the visualization will be display -->
+  <div id="csv-input-wrapper" style="position: fixed; left: 50%; top: 50%; width: 300px; height: 150px; margin: -75px 0 0 -150px; text-align: center">
+    <p>Welcome! Please select a dataset to begin:</p>
+    <input id="csv-input" type="file" accept=".csv">
+  </div>
+
+  <!-- only static element is the svg-canvas. ALl other elements will be added through d3.js -->
+  <svg id="d3-swimlane-canvas" width="100%" height="100%" background="red" style="display: none"/>
+
+  <!-- d3.js v7 is being used for the visualization. Should also work fine with v6 -->
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+
+  <script type="text/javascript">
+    // the event data is stored in a simple array here
+    // if the visualization is used in some form of framework like react, it should be loaded via a proper backend / API
+    // everything else in this script will just work with any input data that has the same format
+    //const eventData = [{"Actor": "insider001","Event": "Nessus scan","Datetime": "23.06.2022 00:00","COLOR": "Blue" }, {"Actor": "insider001","Event": "presence of PsExec64.exe","Datetime": "28.06.2022 17:18","COLOR": "Blue" }, {"Actor": "insider001","Event": "Downloaded payload.zip","Datetime": "28.06.2022 18:42:15","COLOR": "Green" }, {"Actor": "insider001","Event": "nessus-10.2.0-x64.msi downloaded","Datetime": "30.06.2022 17:31","COLOR": "Green" }, {"Actor": "attacker002","Event": "uploaded payload.zip","Datetime": "28.06.2022 18:38","COLOR": "Brown" }, {"Actor": "attacker002","Event": "Folder Created- \"Nessus Files\" in FileShare2","Datetime": "06.07.2022 16:30","COLOR": "Brown" }, {"Actor": "attacker002","Event": "uploaded nessus.license to FileShare2","Datetime": "06.07.2022 16:31","COLOR": "Brown" }, {"Actor": "attacker002","Event": "uploaded all-2.0.tar.gz to FileShare2","Datetime": "06.07.2022 16:31","COLOR": "Brown" }, {"Actor": "attacker002","Event": "downloadedscanned_result2.csv from FileShare2","Datetime": "06.07.2022 18:48","COLOR": "Brown" }, {"Actor": "attacker003","Event": "Uploaded payload.zip to FileShare","Datetime": "28.06.2022 18:40","COLOR": "Orange" }, {"Actor": "attacker003","Event": "Uploaded newtest.zip to FileShare","Datetime": "29.06.2022 17:14","COLOR": "Orange" }, {"Actor": "attacker003","Event": "Uploaded Empire.xlsm to FileShare","Datetime": "29.06.2022 17:31","COLOR": "Orange" }, {"Actor": "attacker003","Event": "Uploaded Smb_delivery.xlsm to FileShare","Datetime": "29.06.2022 17:31","COLOR": "Orange" }, {"Actor": "attacker003","Event": "downloadedscanned_result2.csv from FileShare2","Datetime": "06.07.2022 19:34","COLOR": "Orange" }, {"Actor": "Security team","Event": "Alerted - Rare Contact AV Signature Clone on payload.pdf in system001","Datetime": "28.06.2022 18:57","COLOR": "Purple" }, {"Actor": "Security team","Event": "AV Detections (No alert) - Malware Swrort.i from 172.16.25.10 to 172.16.25.20","Datetime": "28.06.2022 18:57","COLOR": "Purple" }, {"Actor": "Security team","Event": "ALERT - Trojan on system001","Datetime": "28.06.2022 18:58","COLOR": "Purple" }, {"Actor": "Security team","Event": "AV Detections (No alert) - Malware Swrort.i from 10.0.0.1 to 172.16.25.2","Datetime": "28.06.2022 19:18","COLOR": "Purple" }, {"Actor": "Security team","Event": "Custom detection on PsExec.exe (Blocked)","Datetime": "30.06.2022 15:17","COLOR": "Purple" }];
+  </script>
+  
+  <script type="text/javascript">
+
+    // helper function to add line breaks to svg text (here: "Event"-property of data / event name)
+    // with svg text, calculating the width is only possible when the text was already rendered on the page
+    // hence, this function takes an existing svg <text>-element, calculates its width and then breaks the actual text
+    // whenever that hits the maxWidth given to the function. The text with line breaks is then added using <tspan> elements
+
+    const addLineBreaks = (
+      text,
+      maxWidth,
+      dy,
+      lineHeight
+    ) => {
+      const y = text.attr("y");
+      const words = text.text().split(/\s+/).reverse();
+
+      let word = undefined;
+      let line = [];
+      let tspan = text
+        .text(null)
+        .append("tspan")
+        .attr("x", 0)
+        .attr("y", y)
+        .attr("dy", `${dy}px`)
+        .attr("data-initial-dy", dy);
+      let lineCount = 1;
+
+      while ((word = words.pop())) {
+        line.push(word);
+        tspan.text(line.join(" "));
+        if (line.length > 1 && tspan.node() && tspan.node().getComputedTextLength() > maxWidth) {
+          line.pop();
+          tspan.text(line.join(" "));
+          line = [word];
+          tspan = text
+            .append("tspan")
+            .attr("x", 0)
+            .attr("y", y)
+            .attr("dy", `${lineHeight}px`)
+            .attr("data-initial-dy", lineHeight)
+            .text(word);
+          lineCount += 1;
+        }
+      }
+
+      return lineCount;
+    };
+
+    // helper function that checks if a given event is colliding with any other event (datetime of both are too close)
+    // this function will be executed until a row is found where no event collides with the given event
+    // in the simplest case, this would just return the starting row parameter (here 1)
+    const calculateRowForEvent = ((event, eventData, xScale, eventSpace, row) => {
+      const conflictingEvents = eventData.filter((d) => 
+        d !== event &&
+        d.Actor === event.Actor && 
+        d.Datetime <= event.Datetime && 
+        (xScale(d.Datetime) + eventSpace) > xScale(event.Datetime) &&
+        d.row === row);
+
+      return conflictingEvents.length > 0 ? calculateRowForEvent(event, eventData, xScale, eventSpace, row + 1) : row;
+    });
+
+    // helper function that generates a single hsl-based random pastel color
+    const generateRandomPastelColor = (hue) => `hsl(${hue},${(50 + 120 * Math.random())}%,${20 + 10 * Math.random()}%)`;
+
+    const createSwimlaneVisualization = (eventData) => {
+
+      // config
+      // get bounding box of the svgs parent element
+      // if used in a framework like react, this should be calculated based on the parent <div>-element or similar
+      const boundingBox = d3.select("body").node().getBoundingClientRect();
+
+      // viz will use the width available to it
+      const width = boundingBox.width;
+
+      // margin is needed for each side so the axes don't get clipped
+      const margin = {
+        top: 50,
+        right: 50,
+        bottom: 50,
+        left: 150,
+      }
+
+      // the dateformat for the rendered "Datetime"-property of the event data can be changed to show miliseconds as well
+      const datetimeFormat = "%d.%m.%y %H:%M:%S"; // comment out for display with miliseconds
+      //const datetimeFormat = "%d.%m.%y %H:%M:%S.%L"; // uncomment for display with miliseconds
+      const datetimeWidth = datetimeFormat === "%d.%m.%y %H:%M:%S" ? 100 : 120;
+
+      // event width is a width for the event name (here 190) and the width of the datetime
+      const eventWidth = 205 + datetimeWidth;
+      // basic event height is only used for initial rendering, actual event height is dynamic and will be calculated later
+      const eventHeight = 50;
+      // margin between events
+      const eventMargin = 10;
+
+
+
+      // data prep
+      // convert Datetime-prop to correct format & add a row-prop
+      eventData.forEach((d) => {
+        d.row = 1;
+        if(d.Datetime) {
+          let date = Date.parse(d.Datetime);
+
+
+          if(isNaN(date)) {
+            const [dateSplit, time] = d.Datetime.split(" ");
+            const dateYear = dateSplit.split(".")[2];
+            const dateMonth = dateSplit.split(".")[1];
+            const dateDay = dateSplit.split(".")[0];
+            const timeHour = time?.split(":")[0];
+            const timeMinute = time?.split(":")[1];
+            const timeSecond = time?.split(":")[2];
+            // convert using correct format if values are present and add timezone
+            date = new Date(Date.UTC(dateYear, dateMonth, dateDay, timeHour ?? 0, timeMinute ?? 0, timeSecond ?? 0));  
+          } else date = new Date(date);
+          
+          d.Datetime = date;
+        }
+      });
+
+      // sort by Datetime to allow checking for what events overlap with each other
+      eventData.sort((a, b) => a.Datetime - b.Datetime);
+
+
+      // x axis / x scale
+      // the x axis in this visualization uses a time scale, to be able to automatically place the Datetime-props of events
+      const xScale = d3.scaleTime(
+        [d3.min(eventData.map((d) => d.Datetime)), d3.max(eventData.map((d) => d.Datetime))],
+        [margin.left, width - margin.left - margin.right]
+      );
+
+      // add a margin left and right so no event gets clipped
+      const xTimeMargin = new Date(xScale.invert(eventWidth + eventMargin) - xScale.invert(0));
+      xScale.domain([xScale.domain()[0] - xTimeMargin.getTime() / 2.0, new Date(xScale.domain()[1].getTime() + xTimeMargin.getTime())])
+
+
+
+      // d3.js magic
+      // this is the actual svg-canvas
+      const parentNode = d3.select("#d3-swimlane-canvas");
+
+      // calculate the delta in days to set the ticks() so that every day is shown on the axis
+      const deltaDays = Math.ceil((xScale.domain()[1] - xScale.domain()[0]) / 1000 / 60 / 60 / 24);
+
+      // create and append x axis svg-elements
+      const xAxis = d3.axisTop(xScale).ticks(deltaDays).tickFormat(d3.timeFormat("%d.%m"));
+      parentNode.append("g")
+        .attr("class", "x-axis")
+        .attr("transform", `translate(0,${margin.top})`)
+        .call(xAxis);
+
+      // alter the appearence of the x-axis labels (larger and bold)
+      parentNode.selectAll("g.x-axis .tick text, g.y-axis .tick text")
+        .attr("fill", "#202020")
+        .style("font-weight", "bold")
+
+
+      // add a root group for events
+      const events = parentNode.append("g")
+        .attr("class", "events-root");
+
+      // add an events background group that will be used to render the vertical lines (so they will appear behind the events)
+      const eventsBackground = events.append("g").attr("class", "events-background")
+        .selectAll(".event")
+        .data(eventData)
+        .join("g")
+        .attr("class", "event")
+        .attr("transform", `translate(0,0)`); // will be calculated once actor height is known
+      eventsBackground.append("line")
+        .attr("class", "event-vertical-line")
+        .attr("x1", 0)
+        .attr("x2", 0)
+        .attr("y1", 0) // will be calculated once actor height is known
+        .attr("y2", 0)
+        //.attr("stroke-dasharray", "5 10")
+        .attr("stroke", "#a0a0a0");
+
+      // add an events foreground group that will be used to render the actual events including the datetime, the text & the box
+      const eventsForeground = events.append("g").attr("class", "events-foreground")
+        .selectAll(".event")
+        .data(eventData)
+        .join("g")
+        .attr("class", "event")
+        .attr("transform", `translate(0,0)`); // will be calculated once actor height is known
+      eventsForeground.append("rect")
+        .attr("class", "event-rect")
+        .attr("transform", `translate(${- datetimeWidth - 10}, 0)`)
+        .attr("width", eventWidth)
+        .attr("height", eventHeight)
+        .attr("rx", 3)
+        .attr("stroke", "#000000")
+        .attr("stroke-width", 0.5);
+      eventsForeground.append("text")
+        .attr("class", "event-date")
+        .attr("text-anchor", "end")
+        .attr("dominant-baseline", "middle")
+        .attr("fill", "#e0e0e0")
+        .style("font-weight", "bold")
+        .text((d) => `${d3.timeFormat(datetimeFormat)(d.Datetime)}`)
+      eventsForeground.append("text")
+        .attr("class", "event-name")
+        .attr("id", (d, i) => `event-name-${i}`)
+        .attr("text-anchor", "start")
+        .attr("dominant-baseline", "middle")
+        .attr("transform", `translate(5, 12.5)`)
+        .attr("fill", "white")
+        .text((d) => `${d.Event}`);
+
+      // calculate line breaks for event names & set the actual height of events depending on the number of line breaks needed
+      eventsForeground.each(function(d) {
+        const lineBreaks = addLineBreaks(d3.select(this).select(".event-name"), eventWidth - datetimeWidth - 20, 0, 15);
+        d.height = lineBreaks * 15 + 10;
+        d3.select(this).select(".event-rect").attr("height", d.height);
+        d3.select(this).select(".event-date").attr("transform", `translate(-5, ${d.height / 2.0})`);
+      });
+
+      // calculate in which row which event will be placed (depending on whether it collides with a previous event)
+      eventData.forEach((d) => {
+        d.row = calculateRowForEvent(d, eventData, xScale, eventWidth + eventMargin, d.row);
+      });
+
+
+      // calculate height (=sum of all row heights) and y-position (sum of all previous actors) of actors / the y axis
+      const actorData = [...new Set(eventData.map((d) => d.Actor))].map((d, i) => ({
+        "name": d,
+        "index": i,
+        "rowHeights": [],
+      }));
+
+      // generate one random color per actor. Save hue value so that no two colors ever look to similar
+      const colorHuesUsed = [-1];
+      let hue = -1;
+      actorData.forEach((d) => {
+        if(colorHuesUsed.length < 19) {
+          while(colorHuesUsed.includes(hue) && colorHuesUsed.length < 19) {
+            hue = Math.round(Math.random() * 19);
+          }
+          colorHuesUsed.push(hue);
+          d.color = generateRandomPastelColor(hue *  18);
+        } else d.color = generateRandomPastelColor(Math.round(Math.random() * 359));
+      })
+
+      actorData.forEach((d) => {
+        const maxRow = d3.max(eventData.filter((d_) => d_.Actor === d.name).map((d_) => d_.row));
+        for(let i = 1; i <= maxRow; ++i) {
+          d.rowHeights.push(d3.max(eventData.filter((d_) => d_.Actor === d.name && d_.row === i).map((d_) => d_.height)) + eventMargin);
+        }
+        d.posY = d3.sum(actorData.filter((d_) => d_.index < d.index).map((d_) => d3.sum(d_.rowHeights)));
+      });
+
+      // calculate the actual height of the entire visualization (which depends on the actors' heights)
+      const height = actorData[actorData.length - 1].posY + d3.sum(actorData[actorData.length - 1].rowHeights) + eventHeight + 1;
+
+      // update the svg-properties
+      parentNode
+        .attr("width", width)
+        .attr("height", height)
+        .attr("viewBox", [0, 0, width, height]);
+
+      // calculate event position (which requires row- and actor-heights)
+      eventData.forEach((d) => {
+        d.position = [
+          xScale(d.Datetime),
+          actorData.find((d_) => d_.name === d.Actor).posY + 
+            d3.sum(actorData.find((d_) => d_.name === d.Actor).rowHeights.filter((height, i) => (i + 1) < d.row)) +
+            d3.sum(actorData.find((d_) => d_.name === d.Actor).rowHeights.filter((height, i) => (i + 1) === d.row)) / 2.0 -
+            d.height / 2.0 +
+            margin.top,
+        ];
+      })
+
+      // set event position for both foreground & background
+      eventsBackground.attr("transform", (d) => `translate(${d.position[0]},${d.position[1]})`)
+        .selectAll(".event-vertical-line")
+        .attr("y1", (d) => `${- d.position[1] + margin.top}`);
+      eventsForeground.attr("transform", (d) => `translate(${d.position[0]},${d.position[1]})`)
+      eventsForeground.selectAll(".event-rect").attr("fill", (d) => actorData.find((d_) => d_.name === d.Actor).color);
+
+
+      // add y-axis line
+      parentNode.append("line")
+        .attr("x1", margin.left + 1)
+        .attr("x2", margin.left + 1)
+        .attr("y1", margin.top)
+        .attr("y2", height)
+        .attr("fill", "transparent")
+        .attr("stroke", "#000000")
+        .attr("stroke-width", 1);
+
+      // add lines and text for actors (y axis)
+      const actors = parentNode.append("g")
+        .attr("class", "y-axis-root")
+        .selectAll(".actor-group")
+        .data(actorData)
+        .join("g")
+        .attr("class", "actor-group")
+        .attr("transform", (d) => `translate(${margin.left}, ${margin.top + d.posY + d3.sum(d.rowHeights) / 2.0})`);
+      actors.append("text")
+        .text((d) => d.name)
+        .attr("dx", -margin.left * 0.1)
+        .attr("text-anchor", "end")
+        .attr("dominant-baseline", "middle")
+        .style("font-size", "150%")
+        .style("font-weight", "bold")
+        .attr("fill", (d) => d.color);
+      actors.append("line")
+        .attr("x1", width - margin.left - margin.right)
+        .attr("x2", - margin.left * 0.9)
+        .attr("y1", (d) => d3.sum(d.rowHeights) / 2.0)
+        .attr("y2", (d) => d3.sum(d.rowHeights) / 2.0)
+        .attr("fill", "transparent")
+        .attr("stroke", "#202020")
+        .attr("stroke-width", 2);
+    }
+
+  </script>
+
+  <!-- simple file reader that will only accept .csv-files and then parse the data accordingly -->
+  <script type="text/javascript">
+
+    // helper functioin that will determine the delimiter in given lines of a .csv-file by checking how many occurences of
+    // possible delimiters are present
+    const checkDelimiterInLines = (possibleDelimiters, lines) => {
+      let delimiterToCheck = [...possibleDelimiters];
+      let delimiterPrevOccurences = delimiterToCheck.map((d) => null);
+      let delimiterProbability = delimiterToCheck.map((d) => 100);
+
+      lines.forEach((line) => {
+        delimiterToCheck.forEach((d,i) => {
+          const occurences = (line.match(new RegExp(d,"g"))||[]).length;
+          if(occurences === 0)
+            delimiterProbability[i] -= 5;
+          else
+            delimiterProbability[i] -= delimiterPrevOccurences[i] === null ? 0 : Math.abs(delimiterPrevOccurences[i] - occurences);
+          delimiterPrevOccurences[i] = occurences;
+        })
+      });
+
+      return delimiterToCheck[delimiterProbability.indexOf(d3.max(delimiterProbability))];
+    }
+
+    const fileInput = document.getElementById("csv-input");
+
+    // will be triggered once the user has selected a .csv-file and that file is loaded
+    const fileInputOnChange = () => {
+      const reader = new FileReader();
+      
+      // will be trigered once the binaryString load was successful
+      reader.onload = (reader) => {
+        // split file by lines
+        const lines = reader.target.result.search("\r\n") !== -1 ? reader.target.result.split("\r\n") : reader.target.result.split("\n");
+        // find delimiter in file by using the first couple of lines
+        const delimiter = checkDelimiterInLines([",",";","\t"], lines.slice(0,10));
+        // extract header from first line
+        const header = lines[0].split(delimiter);
+        // parse all lines except the first
+        const data = lines.slice(1).filter((d) => d.replace(" ", "") !== "").map((d) => {
+          const lineSplit = d.split(delimiter);
+          const row = {};
+          header.forEach((d_, i) => row[d_] = lineSplit[i])
+          return row;
+        });
+
+        // hide input, show svg
+        d3.select("#csv-input-wrapper").style("display", "none");
+        d3.select("#d3-swimlane-canvas").style("display", "block");
+
+        // create viz
+        createSwimlaneVisualization(data);
+      }
+
+      // start reading the file. When it is done, calls the onload event defined above.
+      reader.readAsBinaryString(fileInput.files[0]);
+    }
+
+    fileInput.addEventListener("change", fileInputOnChange);
+
+    // use dummy data for debugging purposes
+    /* d3.select("#csv-input-wrapper").style("display", "none");
+    d3.select("#d3-swimlane-canvas").style("display", "block");
+    createSwimlaneVisualization(eventData);*/
+  </script>
+</body>
+</html>
