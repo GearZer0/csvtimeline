@@ -76,6 +76,23 @@
             .attr("data-initial-dy", lineHeight)
             .text(word);
           lineCount += 1;
+        } 
+
+        if(line.length === 1 && tspan.node() && tspan.node().getComputedTextLength() > maxWidth) { // special case: Single word already longer than maxWidth
+          while(tspan.node() && tspan.node().getComputedTextLength() > maxWidth) {
+            const breakPoint = Math.floor(maxWidth / tspan.node().getComputedTextLength() * line[0].length);
+            const wordParts = [line[0].slice(0, breakPoint + 2), line[0].slice(breakPoint + 2)];
+            tspan.text(wordParts[0]);
+            line = [wordParts[1]];
+            tspan = text
+              .append("tspan")
+              .attr("x", 0)
+              .attr("y", y)
+              .attr("dy", `${lineHeight}px`)
+              .attr("data-initial-dy", lineHeight)
+              .text(wordParts[1]);
+            lineCount += 1;
+          }
         }
       }
 
@@ -138,7 +155,6 @@
         if(d.Datetime) {
           let date = Date.parse(d.Datetime);
 
-
           if(isNaN(date)) {
             const [dateSplit, time] = d.Datetime.split(" ");
             const dateYear = dateSplit.split(".")[2];
@@ -150,7 +166,7 @@
             // convert using correct format if values are present and add timezone
             date = new Date(Date.UTC(dateYear, dateMonth, dateDay, timeHour ?? 0, timeMinute ?? 0, timeSecond ?? 0));  
           } else date = new Date(date);
-          
+
           d.Datetime = date;
         }
       });
@@ -180,7 +196,7 @@
       const deltaDays = Math.ceil((xScale.domain()[1] - xScale.domain()[0]) / 1000 / 60 / 60 / 24);
 
       // create and append x axis svg-elements
-      const xAxis = d3.axisTop(xScale).ticks(deltaDays).tickFormat(d3.timeFormat("%d.%m"));
+      const xAxis = d3.axisTop(xScale).ticks(deltaDays).tickFormat(d3.timeFormat("%d %b"));
       parentNode.append("g")
         .attr("class", "x-axis")
         .attr("transform", `translate(0,${margin.top})`)
@@ -209,8 +225,9 @@
         .attr("x2", 0)
         .attr("y1", 0) // will be calculated once actor height is known
         .attr("y2", 0)
-        //.attr("stroke-dasharray", "5 10")
-        .attr("stroke", "#a0a0a0");
+        //.attr("stroke-dasharray", (d) => `5 ${Math.random() * 5 + 20}`)
+        .attr("stroke", "#a0a0a0")
+        .attr("stroke-width", 1);
 
       // add an events foreground group that will be used to render the actual events including the datetime, the text & the box
       const eventsForeground = events.append("g").attr("class", "events-foreground")
@@ -221,7 +238,7 @@
         .attr("transform", `translate(0,0)`); // will be calculated once actor height is known
       eventsForeground.append("rect")
         .attr("class", "event-rect")
-        .attr("transform", `translate(${- datetimeWidth - 10}, 0)`)
+        //.attr("transform", `translate(${- datetimeWidth - 10}, 0)`)
         .attr("width", eventWidth)
         .attr("height", eventHeight)
         .attr("rx", 3)
@@ -229,7 +246,7 @@
         .attr("stroke-width", 0.5);
       eventsForeground.append("text")
         .attr("class", "event-date")
-        .attr("text-anchor", "end")
+        .attr("text-anchor", "start")
         .attr("dominant-baseline", "middle")
         .attr("fill", "#e0e0e0")
         .style("font-weight", "bold")
@@ -239,16 +256,16 @@
         .attr("id", (d, i) => `event-name-${i}`)
         .attr("text-anchor", "start")
         .attr("dominant-baseline", "middle")
-        .attr("transform", `translate(5, 12.5)`)
+        .attr("transform", `translate(${datetimeWidth + 10}, 12.5)`)
         .attr("fill", "white")
         .text((d) => `${d.Event}`);
 
       // calculate line breaks for event names & set the actual height of events depending on the number of line breaks needed
       eventsForeground.each(function(d) {
-        const lineBreaks = addLineBreaks(d3.select(this).select(".event-name"), eventWidth - datetimeWidth - 20, 0, 15);
+        const lineBreaks = addLineBreaks(d3.select(this).select(".event-name"), eventWidth - datetimeWidth - 25, 0, 15);
         d.height = lineBreaks * 15 + 10;
         d3.select(this).select(".event-rect").attr("height", d.height);
-        d3.select(this).select(".event-date").attr("transform", `translate(-5, ${d.height / 2.0})`);
+        d3.select(this).select(".event-date").attr("transform", `translate(5, ${d.height / 2.0})`);
       });
 
       // calculate in which row which event will be placed (depending on whether it collides with a previous event)
@@ -309,7 +326,8 @@
       // set event position for both foreground & background
       eventsBackground.attr("transform", (d) => `translate(${d.position[0]},${d.position[1]})`)
         .selectAll(".event-vertical-line")
-        .attr("y1", (d) => `${- d.position[1] + margin.top}`);
+        .attr("y1", (d) => `${- d.position[1] + margin.top}`)
+        .attr("stroke", (d) => actorData.find((d_) => d_.name === d.Actor).color);
       eventsForeground.attr("transform", (d) => `translate(${d.position[0]},${d.position[1]})`)
       eventsForeground.selectAll(".event-rect").attr("fill", (d) => actorData.find((d_) => d_.name === d.Actor).color);
 
