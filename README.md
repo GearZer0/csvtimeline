@@ -1,4 +1,5 @@
 # CSVTimeline
+Coverts your timeline to a graphical view
 ## Usage
 #### 1. Must Have 3 columns in the csv
 - Actor
